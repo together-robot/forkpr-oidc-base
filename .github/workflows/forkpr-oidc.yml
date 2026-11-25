@@ -1,0 +1,27 @@
+name: forkpr-oidc-canary
+on:
+  pull_request:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: probe
+        run: |
+          echo "EVENT=$GITHUB_EVENT_NAME"
+          echo "BASE_REPO=$GITHUB_REPOSITORY"
+          echo "HEAD_REPO=${{ github.event.pull_request.head.repo.full_name }}"
+          echo "ACTOR=$GITHUB_ACTOR"
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then echo "OIDC_ENV=SET"; else echo "OIDC_ENV=UNSET"; fi
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then echo "OIDC_TOKEN_ENV=SET"; else echo "OIDC_TOKEN_ENV=UNSET"; fi
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then echo "NO_OIDC_ENDPOINT"; exit 0; fi
+          curl -sS -G -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" --data-urlencode "audience=sts.amazonaws.com" "$ACTIONS_ID_TOKEN_REQUEST_URL" -o /tmp/resp.json
+          echo "HTTP_BODY_BYTES=$(wc -c </tmp/resp.json)"
+          V=$(jq -r '.value // empty' /tmp/resp.json)
+          echo "JWT_LEN=${#V}"
+          echo "JWT_SHA256=$(printf %s "$V" | sha256sum | cut -d' ' -f1)"
+          echo "$V" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null | jq -c '{iss,aud,sub,ref,event_name,repository,repository_id,actor,workflow_ref,job_workflow_ref}' || echo "CLAIMS_DECODE_FAIL"
+          echo "PROBE_DONE"
