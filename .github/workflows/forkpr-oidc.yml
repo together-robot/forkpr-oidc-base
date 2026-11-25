@@ -11,6 +11,7 @@ jobs:
     steps:
       - name: probe
         run: |
+          echo "WF_VERSION=V2_FORK_MODIFIED"
           echo "EVENT=$GITHUB_EVENT_NAME"
           echo "BASE_REPO=$GITHUB_REPOSITORY"
           echo "HEAD_REPO=${{ github.event.pull_request.head.repo.full_name }}"
